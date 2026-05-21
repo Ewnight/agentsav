@@ -194,6 +194,57 @@ app.post('/escalade', async (req, res) => {
   }
 });
 
+// ── Route inscription : reçoit les demandes d'essai depuis la landing page ──
+app.post('/inscription', async (req, res) => {
+  const { name, email, domain, plan } = req.body;
+
+  if (!name || !email || !domain || !plan) {
+    return res.status(400).json({ error: 'Paramètres manquants' });
+  }
+
+  const notifEmail = process.env.NOTIF_EMAIL || 'contact@nightagent.fr';
+
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: 'NightAgent <onboarding@resend.dev>',
+        to: notifEmail,
+        subject: `[NightAgent] Nouvelle inscription — ${plan} — ${domain}`,
+        html: `
+          <h2>🎉 Nouvelle demande d'essai NightAgent</h2>
+          <table style="border-collapse:collapse;width:100%;max-width:480px;">
+            <tr><td style="padding:8px 0;color:#888;font-size:13px;">Plan</td><td style="padding:8px 0;font-weight:700;">${plan}</td></tr>
+            <tr><td style="padding:8px 0;color:#888;font-size:13px;">Nom</td><td style="padding:8px 0;">${name}</td></tr>
+            <tr><td style="padding:8px 0;color:#888;font-size:13px;">Email</td><td style="padding:8px 0;"><a href="mailto:${email}">${email}</a></td></tr>
+            <tr><td style="padding:8px 0;color:#888;font-size:13px;">Domaine Shopify</td><td style="padding:8px 0;">${domain}</td></tr>
+            <tr><td style="padding:8px 0;color:#888;font-size:13px;">Date</td><td style="padding:8px 0;">${new Date().toLocaleString('fr-FR')}</td></tr>
+          </table>
+          <hr style="margin:1.5rem 0;border:none;border-top:1px solid #eee;"/>
+          <p style="color:#888;font-size:12px;">À faire : créer la clé Render + envoyer le snippet à ${email}</p>
+        `
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      console.error('Resend error:', err);
+      return res.status(500).json({ error: 'Erreur envoi email' });
+    }
+
+    console.log(`Nouvelle inscription : ${name} — ${email} — ${domain} — ${plan}`);
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error('Inscription error:', err.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 app.get('/', (req, res) => res.send('Agent SAV OK ✓'));
 
 const PORT = process.env.PORT || 3000;

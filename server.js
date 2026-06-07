@@ -28,6 +28,82 @@ function loadShops() {
 const SHOPS = loadShops();
 console.log(`${Object.keys(SHOPS).length} boutique(s) chargée(s)`);
 
+// ── Comptage conversations par clé API ──
+// Structure : { apiKey: { count: Number, month: 'YYYY-MM', warned450: Boolean, billed500: Boolean } }
+const conversationCounters = {};
+
+const LIMIT_WARNING  = 450;
+const LIMIT_BILLING  = 500;
+const LIMIT_CUTOFF   = 550;
+const OVERAGE_PRICE  = 0.10; // € par conv supplémentaire
+
+function getCurrentMonth() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function getCounter(apiKey) {
+  const month = getCurrentMonth();
+  if (!conversationCounters[apiKey] || conversationCounters[apiKey].month !== month) {
+    // Nouveau mois → reset
+    conversationCounters[apiKey] = { count: 0, month, warned450: false, billed500: false };
+  }
+  return conversationCounters[apiKey];
+}
+
+async function sendLimitEmail({ to, subject, html }) {
+  if (!process.env.RESEND_API_KEY) return;
+  await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ from: 'NightAgent <onboarding@resend.dev>', to, subject, html })
+  });
+}
+
+async function handleConversationCount(apiKey, shop) {
+  const counter = getCounter(apiKey);
+  counter.count++;
+  const count = counter.count;
+  const ownerEmail = shop.ownerEmail;
+
+  // Seuil 450 — email d'avertissement (1 seul envoi par mois)
+  if (count === LIMIT_WARNING && !counter.warned450 && ownerEmail) {
+    counter.warned450 = true;
+    sendLimitEmail({
+      to: ownerEmail,
+      subject: `[NightAgent] Vous approchez de votre limite mensuelle (${count} conversations)`,
+      html: `
+        <h2>⚠️ Limite bientôt atteinte</h2>
+        <p>Votre boutique a utilisé <strong>${count} conversations</strong> ce mois-ci.</p>
+        <p>À partir de 500 conversations, chaque échange supplémentaire est facturé <strong>${OVERAGE_PRICE}€</strong>.</p>
+        <p>Pensez à passer sur le plan <strong>Pro (99€/mois, illimité)</strong> pour éviter des frais supplémentaires.</p>
+        <p style="color:#888;font-size:12px;">NightAgent — support automatisé</p>
+      `
+    });
+  }
+
+  // Seuil 500 — email facturation surplus (1 seul envoi par mois)
+  if (count === LIMIT_BILLING && !counter.billed500 && ownerEmail) {
+    counter.billed500 = true;
+    sendLimitEmail({
+      to: ownerEmail,
+      subject: `[NightAgent] Limite atteinte — facturation surplus activée`,
+      html: `
+        <h2>📊 Limite mensuelle atteinte</h2>
+        <p>Votre boutique a atteint <strong>${count} conversations</strong> ce mois-ci.</p>
+        <p>Les conversations supplémentaires sont désormais facturées <strong>${OVERAGE_PRICE}€ chacune</strong>.</p>
+        <p>Le bot sera coupé à <strong>550 conversations</strong>. Passez sur le plan <strong>Pro</strong> pour éviter toute interruption.</p>
+        <p style="color:#888;font-size:12px;">NightAgent — support automatisé</p>
+      `
+    });
+  }
+
+  return count;
+}
+
 // ── Cherche une commande Shopify par numéro ou email ──
 async function findShopifyOrder(query, shopDomain, accessToken) {
   try {
@@ -119,6 +195,14 @@ app.post('/chat', async (req, res) => {
 
   // Résolution des credentials Shopify via la clé API (jamais exposés au client)
   const shop = apiKey ? SHOPS[apiKey.toLowerCase()] : null;
+
+  // Comptage conversations + gestion seuils
+  if (apiKey && shop) {
+    const count = await handleConversationCount(apiKey.toLowerCase(), shop);
+    if (count > LIMIT_CUTOFF) {
+      return res.status(429).json({ error: 'Limite mensuelle atteinte. Veuillez contacter NightAgent pour continuer.' });
+    }
+  }
 
   // Cherche une commande si le dernier message en mentionne une
   const lastMessage = messages[messages.length - 1]?.content || '';

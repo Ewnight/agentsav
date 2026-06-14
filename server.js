@@ -237,6 +237,11 @@ app.post('/chat', async (req, res) => {
   // Résolution des credentials Shopify via la clé API (jamais exposés au client)
   const shop = apiKey ? SHOPS[apiKey.toLowerCase()] : null;
 
+  // Bloque si aucune clé valide — le widget doit toujours envoyer une clé NightAgent connue
+  if (!shop) {
+    return res.status(401).json({ error: 'Clé NightAgent invalide ou manquante. Vérifiez votre configuration.' });
+  }
+
   // Comptage conversations + gestion seuils
   if (apiKey && shop) {
     const count = await handleConversationCount(apiKey.toLowerCase(), shop);

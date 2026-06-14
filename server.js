@@ -5,6 +5,36 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ── Rate limiting en mémoire ──
+// Par IP : 20 req/min (protection bots/spam)
+// Par clé API : 60 req/min (protection facture Anthropic)
+const rateLimitStore = {};
+
+function checkRateLimit(key, maxRequests, windowMs) {
+  const now = Date.now();
+  if (!rateLimitStore[key]) {
+    rateLimitStore[key] = { count: 1, resetAt: now + windowMs };
+    return true;
+  }
+  const entry = rateLimitStore[key];
+  if (now > entry.resetAt) {
+    entry.count = 1;
+    entry.resetAt = now + windowMs;
+    return true;
+  }
+  if (entry.count >= maxRequests) return false;
+  entry.count++;
+  return true;
+}
+
+// Nettoyage toutes les 5 minutes pour éviter les fuites mémoire
+setInterval(() => {
+  const now = Date.now();
+  for (const key of Object.keys(rateLimitStore)) {
+    if (rateLimitStore[key].resetAt < now) delete rateLimitStore[key];
+  }
+}, 5 * 60 * 1000);
+
 // ── Charge les boutiques depuis les variables d'environnement ──
 // Format attendu : SHOP_KEY_<identifiant>=domaine.myshopify.com|shpat_xxxxx|email@gerant.com
 function loadShops() {
@@ -59,7 +89,7 @@ async function sendLimitEmail({ to, subject, html }) {
       'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ from: 'NightAgent <onboarding@resend.dev>', to, subject, html })
+    body: JSON.stringify({ from: 'NightAgent <contact@nightagent.fr>', to, subject, html })
   });
 }
 
@@ -166,7 +196,7 @@ async function sendEscaladeEmail({ ownerEmail, customerEmail, shopName, agentNam
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      from: 'NightAgent <onboarding@resend.dev>',
+      from: 'NightAgent <contact@nightagent.fr>',
       to: ownerEmail,
       subject: `[${shopName}] Demande client non résolue — intervention requise`,
       html: `
@@ -191,6 +221,17 @@ app.post('/chat', async (req, res) => {
 
   if (!messages || !system) {
     return res.status(400).json({ error: 'Paramètres manquants' });
+  }
+
+  // Rate limiting par IP
+  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimit('ip:' + ip, 20, 60 * 1000)) {
+    return res.status(429).json({ error: 'Trop de requêtes. Merci de patienter une minute.' });
+  }
+
+  // Rate limiting par clé API
+  if (apiKey && !checkRateLimit('key:' + apiKey.toLowerCase(), 60, 60 * 1000)) {
+    return res.status(429).json({ error: 'Trop de requêtes. Merci de patienter une minute.' });
   }
 
   // Résolution des credentials Shopify via la clé API (jamais exposés au client)
@@ -296,7 +337,7 @@ app.post('/inscription', async (req, res) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        from: 'NightAgent <onboarding@resend.dev>',
+        from: 'NightAgent <contact@nightagent.fr>',
         to: notifEmail,
         subject: `[NightAgent] Nouvelle inscription — ${plan} — ${domain}`,
         html: `
